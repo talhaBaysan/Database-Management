@@ -1,0 +1,171 @@
+-- Örnek Sorgular
+
+SELECT * FROM yardim_edenler;
+SELECT * FROM etkinlikler;
+
+-- sube ve yöneticisi
+SELECT subeler.isim, calisanlar.isim, calisanlar.soyisim 
+FROM subeler
+INNER JOIN calisanlar
+ON subeler.yonetici_id = calisanlar.id;
+
+-- þubeye ait yardým sayýsý
+SELECT subeler.isim, COUNT(*)
+FROM etkinlikler
+INNER JOIN subeler
+ON subeler.id = etkinlikler.sube_id
+GROUP BY etkinlikler.sube_id, subeler.isim
+
+-- yardým eden kiþinin yaptýðý yardým sayýsý: view
+create or replace view yardim_sayisi as
+SELECT yardim_edenler.id, CONCAT(yardim_edenler.isim, ' ', yardim_edenler.soyisim), COUNT(*)
+FROM yardim_edenler
+INNER JOIN etkinlikler
+ON yardim_edenler.id = etkinlikler.yardim_eden_id
+GROUP BY yardim_edenler.id, CONCAT(yardim_edenler.isim, ' ', yardim_edenler.soyisim)
+having count(*)>1
+--select * from yardim_sayisi
+
+
+--yardým alanlarýn her bir türde aldýðý toplam yardým miktarý
+SELECT 
+	CONCAT(yardim_alanlar.isim, ' ', yardim_alanlar.soyisim) AS isim_soyisim, 
+	yardimlasma_turleri.isim, 
+SUM(etkinlikler.miktar)
+FROM yardim_alanlar
+INNER JOIN etkinlikler
+ON yardim_alanlar.id = etkinlikler.yardim_alan_id
+INNER JOIN yardimlasma_turleri
+ON etkinlikler.yardimlasma_tur_id = yardimlasma_turleri.id
+GROUP BY 
+	yardim_alanlar.id, 
+	CONCAT(yardim_alanlar.isim, ' ', yardim_alanlar.soyisim), 
+	yardimlasma_turleri.id, 
+	yardimlasma_turleri.isim
+ORDER BY isim_soyisim
+
+
+-- fonksiyon 1 intersect - bu buna yardým ediyor mu?
+create or replace function kim_kime_yardim_ediyor(y_isim varchar, a_isim varchar) 
+returns boolean as $$ 
+declare 
+	sonuc int; 
+begin
+  	select count(*) into sonuc from (select a.isim, y.isim from yardim_edenler y
+  	inner join etkinlikler e on y.id=e.yardim_eden_id
+   	inner join yardim_alanlar a on a.id=e.yardim_alan_id
+  	where lower(y.isim)=lower(y_isim)
+  	intersect
+  	select a.isim, y.isim from yardim_edenler y
+   	inner join etkinlikler e on y.id=e.yardim_eden_id
+   	inner join yardim_alanlar a on a.id=e.yardim_alan_id
+  	where lower(a.isim)=lower(a_isim)) tablo;
+  	return sonuc; 
+end; 
+$$ language 'plpgsql'; 
+select kim_kime_yardim_ediyor('Mehmet', 'akýn');
+
+
+
+--fonksiyon 2 record
+CREATE TYPE yeni_tur AS (sube_ismi VARCHAR, calisan_sayisi INT);
+
+CREATE OR REPLACE FUNCTION sube_calisan_sayisi (sube_ismi VARCHAR)
+RETURNS yeni_tur 
+AS $$
+DECLARE
+	sube_tur yeni_tur;
+BEGIN
+	SELECT s.isim, COUNT(*) INTO sube_tur  
+	FROM subeler s
+	INNER JOIN calisanlar c ON c.sube_id = s.id
+	WHERE s.isim = sube_ismi	
+	GROUP BY s.id;
+	
+	RETURN sube_tur;
+END;
+$$ language 'plpgsql';
+--SELECT sube_calisan_sayisi('Davutpaþa Þubesi');
+
+
+--fonksiyon 3 cursor
+CREATE OR REPLACE FUNCTION tur_yardim_miktari (yardim_turu VARCHAR, OUT yardim_miktari numeric)
+RETURNS NUMERIC 
+AS $$
+DECLARE
+	yardim_cursor CURSOR FOR SELECT miktar 
+				 FROM etkinlikler e
+				 INNER JOIN yardimlasma_turleri y
+				 ON y.id = e.yardimlasma_tur_id
+				 WHERE y.isim = yardim_turu;
+BEGIN
+	yardim_miktari := 0;	
+	FOR yardim IN yardim_cursor LOOP	
+		yardim_miktari := yardim_miktari + yardim.miktar;	
+	END LOOP;	
+END;
+$$ language 'plpgsql';
+
+--SELECT tur_yardim_miktari('erzak')
+
+-- trigger 1 – bir kiþinin en fazla dört yardým almasýný saðlayan trigger 
+CREATE OR REPLACE FUNCTION etkinlik_trigger_fonk()
+RETURNS TRIGGER 
+AS $$
+DECLARE
+	yardim_alma_sayisi INT;
+BEGIN
+	SELECT COUNT(*) INTO yardim_alma_sayisi
+	FROM etkinlikler e
+	WHERE e.yardim_alan_id = new.yardim_alan_id;
+
+	IF (yardim_alma_sayisi >= 4) THEN
+		RAISE EXCEPTION 'Bir kiþi en fazla 4 sefer yardým alabilir.';
+	RETURN null;
+	ELSE	
+	return new;
+	END IF;
+END;
+$$ LANGUAGE 'plpgsql';
+
+CREATE OR REPLACE TRIGGER etkinlik_trigger
+BEFORE INSERT
+ON etkinlikler
+FOR EACH ROW EXECUTE PROCEDURE etkinlik_trigger_fonk();
+
+--trigger 2 – Yöneticisi silinen þubenin yeni yöneticisini þubedeki en yaþlý kiþi yapan trigger
+CREATE OR REPLACE FUNCTION sube_yonetici_trigger_fonk()
+RETURNS TRIGGER AS $$
+DECLARE
+	sube_id_var INT;
+BEGIN
+	sube_id_var := 0;
+	
+	SELECT s.id INTO sube_id_var
+	FROM subeler s
+	WHERE s.yonetici_id = old.id;
+	
+	IF (sube_id_var > 0) THEN
+		UPDATE subeler
+		SET yonetici_id = tablo.id
+		FROM (SELECT c.id FROM subeler s
+			 INNER JOIN calisanlar c
+			 ON s.id = c.sube_id
+			 WHERE s.id = sube_id_var
+			 AND c.yas = (SELECT MAX(yas) FROM calisanlar c1 WHERE c1.sube_id = sube_id_var AND c1.id != old.id)
+			 ) tablo
+		WHERE subeler.id = sube_id_var;
+		
+		RAISE NOTICE 'Þube yöneticisi güncellendi.';
+	RETURN OLD;
+	END IF;
+	RETURN OLD;
+END;
+$$ LANGUAGE 'plpgsql';
+
+CREATE OR REPLACE TRIGGER sube_yonetici_trigger
+BEFORE DELETE
+ON calisanlar
+FOR EACH ROW EXECUTE PROCEDURE sube_yonetici_trigger_fonk();
+
+

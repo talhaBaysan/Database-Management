@@ -1,0 +1,18 @@
+yardım edenler
+	id, isim, soyisim, yaş, cinsiyet, adres, telefon
+
+çalışan
+	id, isim, soyisim, şube id, başlama tarihi, yaş, cinsiyet, telefon
+
+yardım alanlar
+	id, isim, soyisim, yaş, cinsiyet, adres, telefon, aylık gelir, ailede yardıma muhtaç kişi sayısı
+
+yardımlaşma türü
+	id, isim
+
+şube
+	id, isim, yeri, yönetici
+
+etkinlik
+	id, şube id, isim, yardımlaşma türü, yardım eden id, yardım alan id, miktar, tarih
+
